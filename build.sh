@@ -34,7 +34,7 @@ if [[ -n "${ANDROID_BUILD_TOOLS_DIR:-}" ]]; then
   ZIPALIGN="$ANDROID_BUILD_TOOLS_DIR/zipalign"
 else
   TOOLS="$CACHE/android-build-tools-36.1"
-  if [[ ! -x "$TOOLS/apksigner" || ! -x "$TOOLS/zipalign" ]]; then
+  if [[ ! -x "$TOOLS/apksigner" || ! -x "$TOOLS/zipalign" || ! -f "$TOOLS/lib64/libc++.so" ]]; then
     ZIP="$CACHE/build-tools_r36.1_linux.zip"
     [[ -f "$ZIP" ]] || curl -L --fail --retry 3 -o "$ZIP" \
       https://dl-ssl.google.com/android/repository/build-tools_r36.1_linux.zip
@@ -43,9 +43,11 @@ else
     APKSIGNER_SRC="$(find "$TOOLS.tmp" -type f -name apksigner | head -1)"
     ZIPALIGN_SRC="$(find "$TOOLS.tmp" -type f -name zipalign | head -1)"
     LIB_SRC="$(dirname "$APKSIGNER_SRC")/lib"
+    LIB64_SRC="$(dirname "$APKSIGNER_SRC")/lib64"
     mkdir -p "$TOOLS"
     cp "$APKSIGNER_SRC" "$ZIPALIGN_SRC" "$TOOLS/"
     cp -a "$LIB_SRC" "$TOOLS/lib"
+    cp -a "$LIB64_SRC" "$TOOLS/lib64"
     chmod +x "$TOOLS/apksigner" "$TOOLS/zipalign"
     rm -rf "$TOOLS.tmp"
   fi
