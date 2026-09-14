@@ -1,0 +1,11 @@
+.cache/
+.private/
+out/
+*.apk
+*.apks
+*.xapk
+*.zip
+*.jks
+*.keystore
+*.p12
+__pycache__/
