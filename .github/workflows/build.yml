@@ -1,0 +1,104 @@
+name: Build OKOK Mod
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: Direct URL to the original OKOK 3.1.66 split bundle (zip/xapk)
+        required: true
+        type: string
+      source_sha256:
+        description: Optional SHA-256 of the source bundle
+        required: false
+        type: string
+      publish_release:
+        description: Publish the signed APK as a GitHub Release asset
+        required: true
+        default: false
+        type: boolean
+      release_tag:
+        description: Release tag when publish_release is enabled
+        required: false
+        default: okok-mod-3.1.66
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate scripts
+        run: |
+          python3 -m py_compile patch_okok.py
+          bash -n build.sh
+
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download original bundle
+        env:
+          SOURCE_URL: ${{ inputs.source_url }}
+          SOURCE_SHA256: ${{ inputs.source_sha256 }}
+        run: |
+          set -euo pipefail
+          curl -L --fail --retry 3 --retry-delay 2 -o "$RUNNER_TEMP/okok-source.zip" "$SOURCE_URL"
+          if [ -n "$SOURCE_SHA256" ]; then
+            echo "$SOURCE_SHA256  $RUNNER_TEMP/okok-source.zip" | sha256sum -c -
+          fi
+
+      - name: Prepare signing key
+        env:
+          OKOK_KEYSTORE_B64: ${{ secrets.OKOK_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$OKOK_KEYSTORE_B64" ]; then
+            echo "Missing repository secret OKOK_KEYSTORE_B64" >&2
+            exit 3
+          fi
+          printf '%s' "$OKOK_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/okok-mod.p12"
+          chmod 600 "$RUNNER_TEMP/okok-mod.p12"
+
+      - name: Build signed universal APK
+        env:
+          OKOK_KEYSTORE: ${{ runner.temp }}/okok-mod.p12
+          OKOK_KEYSTORE_PASS: ${{ secrets.OKOK_KEYSTORE_PASS }}
+          OKOK_KEY_ALIAS: ${{ secrets.OKOK_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          test -n "$OKOK_KEYSTORE_PASS"
+          test -n "$OKOK_KEY_ALIAS"
+          ./build.sh "$RUNNER_TEMP/okok-source.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OKOK-Mod-3.1.66-universal
+          path: |
+            out/OKOK-Mod-3.1.66-universal.apk
+            out/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish GitHub Release
+        if: inputs.publish_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          gh release delete "$TAG" --cleanup-tag --yes 2>/dev/null || true
+          gh release create "$TAG" \
+            out/OKOK-Mod-3.1.66-universal.apk \
+            out/SHA256SUMS.txt \
+            --title "OKOK Mod 3.1.66" \
+            --notes "Side-by-side build. Package: com.chipsea.btcontrol.na. Ads disabled. Android Auto Backup enabled. This does not add an in-app Google Drive synchronization screen."
