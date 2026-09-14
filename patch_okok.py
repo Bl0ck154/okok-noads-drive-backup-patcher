@@ -192,31 +192,74 @@ def verify_no_old_package(apk_path: str):
         raise ValueError(f'old package name remains in {apk_path}: {leftovers[:20]}')
 
 
+def _pick_bundle_entry(names, candidates, label):
+    for candidate in candidates:
+        if candidate in names:
+            return candidate
+    raise ValueError(f'could not find {label}; tried: {candidates}')
+
+
 def build(input_zip: str, outdir: str):
     os.makedirs(outdir, exist_ok=True)
     with zipfile.ZipFile(input_zip) as bundle:
         names = set(bundle.namelist())
-        required = {'base.apk', 'split_config.arm64_v8a.apk', 'split_config.xxxhdpi.apk'}
-        if not required.issubset(names):
-            raise ValueError(f'expected split APK set missing: {sorted(required - names)}')
+
+        # Support both the user's split bundle naming and common XAPK naming
+        # used by APKPure mirrors. The base APK hash guard below is authoritative.
+        base_entry = _pick_bundle_entry(
+            names,
+            ('base.apk', f'{OLD_PACKAGE}.apk'),
+            'base APK',
+        )
+        arm64_entry = _pick_bundle_entry(
+            names,
+            ('split_config.arm64_v8a.apk', 'config.arm64_v8a.apk'),
+            'arm64-v8a split',
+        )
+        density_entry = _pick_bundle_entry(
+            names,
+            (
+                'split_config.xxxhdpi.apk', 'config.xxxhdpi.apk',
+                'split_config.xxhdpi.apk', 'config.xxhdpi.apk',
+                'split_config.xhdpi.apk', 'config.xhdpi.apk',
+                'split_config.hdpi.apk', 'config.hdpi.apk',
+                'split_config.mdpi.apk', 'config.mdpi.apk',
+            ),
+            'density split',
+        )
+
+        selected = (
+            (base_entry, 'base.apk', True),
+            (arm64_entry, 'split_config.arm64_v8a.apk', False),
+            (density_entry, 'split_config.density.apk', False),
+        )
 
         tmp = tempfile.mkdtemp(prefix='okok-', dir=outdir)
         try:
-            for name in required:
-                with open(os.path.join(tmp, name), 'wb') as f:
-                    f.write(bundle.read(name))
+            for source_name, canonical_name, _ in selected:
+                with open(os.path.join(tmp, canonical_name), 'wb') as f:
+                    f.write(bundle.read(source_name))
 
             base = os.path.join(tmp, 'base.apk')
-            if sha(open(base, 'rb').read()) != BASE_SHA:
-                raise ValueError('base.apk hash mismatch; expected the analyzed OKOK International 3.1.66 build')
+            actual_base_sha = sha(open(base, 'rb').read())
+            if actual_base_sha != BASE_SHA:
+                raise ValueError(
+                    'base.apk hash mismatch; expected the analyzed OKOK International '
+                    f'3.1.66 build {BASE_SHA}, got {actual_base_sha}'
+                )
+
+            print(f'input base entry: {base_entry}')
+            print(f'input arm64 entry: {arm64_entry}')
+            print(f'input density entry: {density_entry}')
+            print(f'base SHA-256 verified: {actual_base_sha}')
 
             total_package_hits = 0
             total_label_hits = 0
             outputs = []
-            for name in ('base.apk', 'split_config.arm64_v8a.apk', 'split_config.xxxhdpi.apk'):
-                src = os.path.join(tmp, name)
-                dst = os.path.join(outdir, name)
-                p_hits, l_hits = repack(src, dst, is_base=(name == 'base.apk'))
+            for _, canonical_name, is_base in selected:
+                src = os.path.join(tmp, canonical_name)
+                dst = os.path.join(outdir, canonical_name)
+                p_hits, l_hits = repack(src, dst, is_base=is_base)
                 total_package_hits += p_hits
                 total_label_hits += l_hits
                 verify_no_old_package(dst)
