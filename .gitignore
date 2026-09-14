@@ -9,3 +9,5 @@ out/
 *.keystore
 *.p12
 __pycache__/
+
+.tools/
