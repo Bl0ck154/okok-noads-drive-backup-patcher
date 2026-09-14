@@ -1,15 +1,20 @@
-# OKOK International 3.1.66 — no-ads + cloud-backup patcher
+# OKOK Mod 3.1.66 — no ads + side-by-side universal APK
 
-Reproducible **binary patch/build tooling** for the exact OKOK International `3.1.66 (173)` split-APK bundle used to create this project.
+Reproducible **binary patch/build tooling** for the analyzed OKOK International `3.1.66 (173)` split-APK bundle.
 
-This repository does **not** contain the proprietary OKOK APK, decompiled application source, assets, or a signing private key. You provide your own copy of the original bundle. The patcher refuses unknown `base.apk` / DEX / manifest hashes rather than patching a different version blindly.
+This repository does **not** contain the proprietary original OKOK APK/XAPK, decompiled application source, assets, or a private signing key. Supply your own copy of the supported bundle. The patcher checks the analyzed `base.apk`, DEX and manifest hashes before modifying anything.
 
 ## What the patch does
 
-1. **Disables app-driven ads/popups.** The known `com.chipsea.code.ad.TopOnAdManager` initialization/loading/showing entry points (splash, banner and rewarded paths) are replaced with DEX `return-void` bodies. Adapter/SDK bytecode can remain physically present, but the app-level mediation paths are inactive.
-2. **Enables Android Auto Backup** by changing `android:allowBackup` from `false` to `true`. On supported Android devices this lets eligible app files, SharedPreferences and SQLite databases participate in the user's private Android/Google Drive cloud backup, subject to Android backup policy and quota. This is backup/restore, **not** a user-visible Drive file or real-time two-way Drive synchronization.
-3. Recomputes the DEX SHA-1 + Adler32 header values, strips stale signatures, preserves split APKs, and re-aligns stored files/native libraries.
-4. `build.sh` downloads official Android Build Tools 36.1 when needed, runs `zipalign`, then signs/verifies all split APKs with `apksigner` (v1/v2/v3).
+1. **Disables app-driven ads/popups.** The known `com.chipsea.code.ad.TopOnAdManager` initialization/loading/showing entry points (splash, banner and rewarded paths) are replaced with DEX `return-void` bodies.
+2. **Makes the mod a separate app.** The package is renamed from `com.chipsea.btcontrol.en` to `com.chipsea.btcontrol.na`, including matching binary package/provider references, so it can be installed alongside the original OKOK app. The launcher label is changed to `OKOK·Modded Build!`.
+3. **Enables Android Auto Backup** by changing `android:allowBackup` from `false` to `true`. Eligible app files, SharedPreferences and SQLite databases may participate in Android's private cloud backup/restore flow, subject to Android policy and quota.
+4. Recomputes DEX SHA-1/Adler32 values and strips stale APK signatures.
+5. Merges `base.apk` + ARM64 + xxxhdpi resource splits into **one universal APK**, applies 16 KiB-compatible native-library alignment and signs/verifies it with Android `apksigner`.
+
+## Important Google Drive distinction
+
+The current patch **does not add an in-app Google Drive screen, Google OAuth login button, visible My Drive file, or real-time/two-way Drive synchronization**. `allowBackup=true` only enables Android's system-managed Auto Backup path. A proper user-visible Drive sync feature is separate work and should use a real Google OAuth client and UI integrated into the app.
 
 ## Supported input
 
@@ -19,35 +24,51 @@ Expected bundle entries:
 - `split_config.arm64_v8a.apk`
 - `split_config.xxxhdpi.apk`
 
-Exact `base.apk` SHA-256:
+Exact analyzed `base.apk` SHA-256:
 
 `638c2f8d7a5ceb44cb622545d795921a0a929488b7ecf01aa59123c2373ab353`
 
-Package: `com.chipsea.btcontrol.en`
+Original package: `com.chipsea.btcontrol.en`  
+Mod package: `com.chipsea.btcontrol.na`
 
-## Build
+## Local build
 
-Requirements: Python 3, Java `keytool`, `curl`, `unzip`. Android Build Tools are fetched automatically unless `ANDROID_BUILD_TOOLS_DIR` is set.
+Requirements: Python 3, Java/keytool, curl and unzip. APKEditor 1.4.9 and Android Build Tools 36.1 are downloaded automatically and pinned/verified by the scripts.
 
 ```bash
-export OKOK_KEYSTORE_PASS='choose-a-private-password'
+export OKOK_KEYSTORE_PASS='your-private-password'
 ./build.sh '/path/to/OKOK international [3.1.66].zip'
 ```
 
 Output:
 
-`out/OKOK-International-3.1.66-noads-drivebackup.apks`
+`out/OKOK-Mod-3.1.66-universal.apk`
 
-The first build creates `.private/okok-mod.p12`. **Keep that file private and backed up.** Android updates require the same signing key.
+The first local build can create `.private/okok-mod.p12`. Keep it private and backed up: Android updates to an already-installed mod build must be signed with the same key.
+
+## GitHub Actions build
+
+The workflow **Build OKOK Mod** is committed in `.github/workflows/build.yml`.
+
+- Every push/PR validates the Python and shell build scripts.
+- **Run workflow** accepts a direct URL to your own original 3.1.66 bundle and an optional source SHA-256.
+- The manual workflow builds one signed `OKOK-Mod-3.1.66-universal.apk` and uploads it as a GitHub Actions artifact.
+- `publish_release=true` additionally publishes that APK and its SHA-256 file as a GitHub Release.
+
+For stable update-compatible signing, configure these repository Actions secrets (never commit the private key):
+
+- `OKOK_KEYSTORE_B64` — base64 of the PKCS#12 signing keystore
+- `OKOK_KEYSTORE_PASS` — keystore/key password
+- `OKOK_KEY_ALIAS` — signing alias
+
+The original proprietary bundle is intentionally not stored in this public repository.
 
 ## Install
 
-The developer's original private signing key is unavailable, so a modified build cannot update the Play Store/original installation in-place. Preserve/sync any data you need from the original app, uninstall it, then install all three generated split APKs together (for example with a split-APK installer or `adb install-multiple`).
+Install `OKOK-Mod-3.1.66-universal.apk` normally. Because its package is `com.chipsea.btcontrol.na`, it is a separate application and does **not** replace `com.chipsea.btcontrol.en`.
 
-## Google Drive note
-
-Android Auto Backup stores its dataset in the user's private backup storage; it is managed by Android rather than exposed as a normal file in My Drive. Android currently documents a 25 MB per-app Auto Backup limit. If explicit on-demand, two-way Google Drive synchronization is needed, that should be implemented as a separate feature with a proper Google OAuth client rather than embedding credentials into a binary patch.
+The two apps have separate Android sandboxes/databases. Existing private data from the original app is therefore not automatically copied into the mod simply by installing it side-by-side.
 
 ## Legal / provenance
 
-This repo contains only original patch/build tooling and patch metadata. It is not affiliated with Shenzhen Careyou Health Science and Technology Co / OKOK Technology. Use it with software you are authorized to modify.
+This repo contains original patch/build tooling and patch metadata only. It is not affiliated with Shenzhen Careyou Health Science and Technology Co / OKOK Technology. Use it with software you are authorized to modify.
