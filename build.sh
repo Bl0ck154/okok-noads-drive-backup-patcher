@@ -9,15 +9,25 @@ if [[ -z "$INPUT" || ! -f "$INPUT" ]]; then
 fi
 
 OUT="$ROOT/out"
-UNSIGNED="$OUT/unsigned"
-ALIGNED="$OUT/aligned"
-FINAL="$OUT/final"
+PATCHED="$OUT/patched-splits"
+MERGED="$OUT/OKOK-Mod-3.1.66-universal-unsigned.apk"
+ALIGNED="$OUT/OKOK-Mod-3.1.66-universal-aligned.apk"
+FINAL="$OUT/OKOK-Mod-3.1.66-universal.apk"
 CACHE="$ROOT/.cache"
 PRIVATE="$ROOT/.private"
-mkdir -p "$UNSIGNED" "$ALIGNED" "$FINAL" "$CACHE" "$PRIVATE"
-rm -f "$UNSIGNED"/*.apk "$ALIGNED"/*.apk "$FINAL"/*.apk 2>/dev/null || true
+mkdir -p "$PATCHED" "$CACHE" "$PRIVATE"
+rm -rf "$PATCHED"/*
+rm -f "$MERGED" "$ALIGNED" "$FINAL" "$OUT/SHA256SUMS.txt"
 
-python3 "$ROOT/patch_okok.py" "$INPUT" "$UNSIGNED"
+python3 "$ROOT/patch_okok.py" "$INPUT" "$PATCHED"
+
+APKEDITOR="$CACHE/APKEditor-1.4.9.jar"
+APKEDITOR_SHA256="a9cd40df818845456be6d696de6110c89edf4b0a0580cb83438ed6b25a366e67"
+if [[ ! -f "$APKEDITOR" ]]; then
+  curl -L --fail --retry 3 -o "$APKEDITOR" \
+    https://github.com/REAndroid/APKEditor/releases/download/V1.4.9/APKEditor-1.4.9.jar
+fi
+echo "$APKEDITOR_SHA256  $APKEDITOR" | sha256sum -c -
 
 if [[ -n "${ANDROID_BUILD_TOOLS_DIR:-}" ]]; then
   APKSIGNER="$ANDROID_BUILD_TOOLS_DIR/apksigner"
@@ -26,7 +36,7 @@ else
   TOOLS="$CACHE/android-build-tools-36.1"
   if [[ ! -x "$TOOLS/apksigner" || ! -x "$TOOLS/zipalign" ]]; then
     ZIP="$CACHE/build-tools_r36.1_linux.zip"
-    [[ -f "$ZIP" ]] || curl -L --fail --retry 2 -o "$ZIP" \
+    [[ -f "$ZIP" ]] || curl -L --fail --retry 3 -o "$ZIP" \
       https://dl-ssl.google.com/android/repository/build-tools_r36.1_linux.zip
     rm -rf "$TOOLS.tmp" && mkdir -p "$TOOLS.tmp"
     unzip -q -o "$ZIP" -d "$TOOLS.tmp"
@@ -43,10 +53,45 @@ else
   ZIPALIGN="$TOOLS/zipalign"
 fi
 
+java -Xmx4g -jar "$APKEDITOR" m -i "$PATCHED" -o "$MERGED" -f -clean-meta
+
+python3 - "$MERGED" <<'PY'
+import sys, zipfile
+apk=sys.argv[1]
+old=b'com.chipsea.btcontrol.en'
+new=b'com.chipsea.btcontrol.na'
+old16='com.chipsea.btcontrol.en'.encode('utf-16le')
+new16='com.chipsea.btcontrol.na'.encode('utf-16le')
+old_hits=[]; new_hits=0
+with zipfile.ZipFile(apk) as z:
+    bad=z.testzip()
+    if bad:
+        raise SystemExit(f'bad ZIP member: {bad}')
+    for info in z.infolist():
+        if info.is_dir():
+            continue
+        data=z.read(info.filename)
+        if old in data or old16 in data:
+            old_hits.append(info.filename)
+        new_hits += data.count(new) + data.count(new16)
+if old_hits:
+    raise SystemExit(f'old package remains: {old_hits[:20]}')
+if new_hits == 0:
+    raise SystemExit('new package not found in merged APK')
+print(f'package verification OK; new-package hits={new_hits}')
+PY
+
+"$ZIPALIGN" -P 16 -f 4 "$MERGED" "$ALIGNED"
+"$ZIPALIGN" -P 16 -c 4 "$ALIGNED"
+
 KEYSTORE="${OKOK_KEYSTORE:-$PRIVATE/okok-mod.p12}"
 PASS="${OKOK_KEYSTORE_PASS:-okokmod-local}"
 ALIAS="${OKOK_KEY_ALIAS:-okokmod}"
 if [[ ! -f "$KEYSTORE" ]]; then
+  if [[ "${GITHUB_ACTIONS:-false}" == "true" ]]; then
+    echo "GitHub build requires a signing keystore supplied by the workflow." >&2
+    exit 3
+  fi
   keytool -genkeypair -keystore "$KEYSTORE" -storetype PKCS12 \
     -storepass "$PASS" -keypass "$PASS" -alias "$ALIAS" \
     -keyalg RSA -keysize 3072 -validity 3650 \
@@ -55,26 +100,16 @@ if [[ ! -f "$KEYSTORE" ]]; then
   echo "Keep it private; future updates need the same key." >&2
 fi
 
-for src in "$UNSIGNED"/*-patched-unsigned.apk; do
-  name="$(basename "$src" -patched-unsigned.apk)"
-  aligned="$ALIGNED/$name.apk"
-  signed="$FINAL/$name.apk"
-  "$ZIPALIGN" -P 16 -f 4 "$src" "$aligned"
-  "$APKSIGNER" sign \
-    --ks "$KEYSTORE" --ks-key-alias "$ALIAS" \
-    --ks-pass "pass:$PASS" --key-pass "pass:$PASS" \
-    --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-    --out "$signed" "$aligned"
-  "$APKSIGNER" verify --verbose --print-certs "$signed"
-done
+"$APKSIGNER" sign \
+  --ks "$KEYSTORE" --ks-key-alias "$ALIAS" \
+  --ks-pass "pass:$PASS" --key-pass "pass:$PASS" \
+  --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+  --out "$FINAL" "$ALIGNED"
 
-python3 - "$FINAL" "$OUT/OKOK-International-3.1.66-noads-drivebackup.apks" <<'PY'
-import pathlib,sys,zipfile,hashlib
-src=pathlib.Path(sys.argv[1]); dst=pathlib.Path(sys.argv[2])
-apks=sorted(src.glob('*.apk'))
-with zipfile.ZipFile(dst,'w',allowZip64=True) as z:
-    for p in apks: z.write(p,p.name,compress_type=zipfile.ZIP_STORED)
-    sums=''.join(f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n' for p in apks)
-    z.writestr('SHA256SUMS.txt',sums)
-print(dst)
-PY
+"$APKSIGNER" verify --verbose --print-certs "$FINAL"
+sha256sum "$FINAL" | tee "$OUT/SHA256SUMS.txt"
+
+echo
+echo "Built: $FINAL"
+echo "Package: com.chipsea.btcontrol.na"
+echo "Installable alongside the original com.chipsea.btcontrol.en app."
