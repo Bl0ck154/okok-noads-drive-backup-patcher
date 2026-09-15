@@ -9,7 +9,7 @@ permissions:
 jobs:
   launch-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -20,41 +20,52 @@ jobs:
             "https://github.com/Bl0ck154/okok-noads-drive-backup-patcher/releases/download/okok-mod-3.1.66/OKOK-Mod-3.1.66-universal.apk"
           sha256sum "$RUNNER_TEMP/okok.apk"
 
+      - name: Create Java-only diagnostic APK
+        run: |
+          cp "$RUNNER_TEMP/okok.apk" "$RUNNER_TEMP/okok-java.apk"
+          zip -d "$RUNNER_TEMP/okok-java.apk" 'lib/arm64-v8a/*' >/dev/null
+          keytool -genkeypair -noprompt \
+            -keystore "$RUNNER_TEMP/debug.p12" -storetype PKCS12 \
+            -storepass android -keypass android -alias debug \
+            -keyalg RSA -keysize 2048 -validity 3650 \
+            -dname 'CN=OKOK Smoke,O=CI,C=LT'
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign \
+            --ks "$RUNNER_TEMP/debug.p12" --ks-type PKCS12 \
+            --ks-key-alias debug --ks-pass pass:android --key-pass pass:android \
+            --out "$RUNNER_TEMP/okok-java-signed.apk" "$RUNNER_TEMP/okok-java.apk"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$RUNNER_TEMP/okok-java-signed.apk"
+
       - name: Enable KVM permissions
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
 
-      - name: Boot ARM emulator and launch app
+      - name: Boot x86_64 emulator and launch app
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
-          target: default
-          arch: arm64-v8a
-          profile: pixel_2
-          disable-linux-hw-accel: true
-          emulator-boot-timeout: 900
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7_pro
+          emulator-boot-timeout: 420
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -camera-back none
           script: |
             set +e
-            adb install -r "$RUNNER_TEMP/okok.apk" > install.txt 2>&1
+            adb install -r "$RUNNER_TEMP/okok-java-signed.apk" > install.txt 2>&1
             INSTALL_RC=$?
             cat install.txt
-            if [ $INSTALL_RC -ne 0 ]; then
-              adb shell getprop ro.product.cpu.abilist || true
-              exit $INSTALL_RC
-            fi
+            if [ $INSTALL_RC -ne 0 ]; then exit $INSTALL_RC; fi
             adb logcat -c
             adb shell am force-stop com.chipsea.btcontrol.na || true
             adb shell monkey -p com.chipsea.btcontrol.na -c android.intent.category.LAUNCHER 1 > launch.txt 2>&1
             cat launch.txt
-            sleep 12
+            sleep 10
             adb shell pidof com.chipsea.btcontrol.na > pid.txt 2>&1
             PID_RC=$?
             cat pid.txt || true
             adb logcat -d -v threadtime > logcat.txt
-            grep -n -A100 -B30 -E 'FATAL EXCEPTION|AndroidRuntime|Process: com.chipsea.btcontrol.na|Unable to instantiate|Resources\$NotFoundException|SecurityException' logcat.txt > crash.txt || true
+            grep -n -A120 -B40 -E 'FATAL EXCEPTION|AndroidRuntime|Process: com.chipsea.btcontrol.na|Unable to instantiate|UnsatisfiedLinkError|Resources\$NotFoundException|SecurityException|NoClassDefFoundError|ClassNotFoundException|VerifyError' logcat.txt > crash.txt || true
             cat crash.txt || true
             if [ $PID_RC -ne 0 ]; then
               echo 'APP_PROCESS_NOT_RUNNING_AFTER_LAUNCH'
@@ -65,7 +76,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-smoke-logs
+          name: android-smoke-logs-x86
           path: |
             install.txt
             launch.txt
