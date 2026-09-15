@@ -1,0 +1,75 @@
+name: Smoke test release APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launch-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download current release APK
+        run: |
+          curl -L --fail --retry 3 \
+            -o "$RUNNER_TEMP/okok.apk" \
+            "https://github.com/Bl0ck154/okok-noads-drive-backup-patcher/releases/download/okok-mod-3.1.66/OKOK-Mod-3.1.66-universal.apk"
+          sha256sum "$RUNNER_TEMP/okok.apk"
+
+      - name: Enable KVM permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+
+      - name: Boot ARM emulator and launch app
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: default
+          arch: arm64-v8a
+          profile: pixel_2
+          disable-linux-hw-accel: true
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -camera-back none
+          script: |
+            set +e
+            adb install -r "$RUNNER_TEMP/okok.apk" > install.txt 2>&1
+            INSTALL_RC=$?
+            cat install.txt
+            if [ $INSTALL_RC -ne 0 ]; then
+              adb shell getprop ro.product.cpu.abilist || true
+              exit $INSTALL_RC
+            fi
+            adb logcat -c
+            adb shell am force-stop com.chipsea.btcontrol.na || true
+            adb shell monkey -p com.chipsea.btcontrol.na -c android.intent.category.LAUNCHER 1 > launch.txt 2>&1
+            cat launch.txt
+            sleep 12
+            adb shell pidof com.chipsea.btcontrol.na > pid.txt 2>&1
+            PID_RC=$?
+            cat pid.txt || true
+            adb logcat -d -v threadtime > logcat.txt
+            grep -n -A100 -B30 -E 'FATAL EXCEPTION|AndroidRuntime|Process: com.chipsea.btcontrol.na|Unable to instantiate|Resources\$NotFoundException|SecurityException' logcat.txt > crash.txt || true
+            cat crash.txt || true
+            if [ $PID_RC -ne 0 ]; then
+              echo 'APP_PROCESS_NOT_RUNNING_AFTER_LAUNCH'
+              exit 44
+            fi
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-smoke-logs
+          path: |
+            install.txt
+            launch.txt
+            pid.txt
+            logcat.txt
+            crash.txt
+          if-no-files-found: ignore
