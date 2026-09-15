@@ -61,13 +61,12 @@ jobs:
             adb shell monkey -p com.chipsea.btcontrol.na -c android.intent.category.LAUNCHER 1 > launch.txt 2>&1
             cat launch.txt
             sleep 10
-            adb shell pidof com.chipsea.btcontrol.na > pid.txt 2>&1
-            PID_RC=$?
+            adb shell pidof com.chipsea.btcontrol.na > pid.txt 2>&1 || true
             cat pid.txt || true
-            adb logcat -d -v threadtime > logcat.txt
+            adb logcat -d -v threadtime > logcat.txt || true
             grep -n -A120 -B40 -E 'FATAL EXCEPTION|AndroidRuntime|Process: com.chipsea.btcontrol.na|Unable to instantiate|UnsatisfiedLinkError|Resources\$NotFoundException|SecurityException|NoClassDefFoundError|ClassNotFoundException|VerifyError' logcat.txt > crash.txt || true
             cat crash.txt || true
-            if [ $PID_RC -ne 0 ]; then
+            if [ ! -s pid.txt ]; then
               echo 'APP_PROCESS_NOT_RUNNING_AFTER_LAUNCH'
               exit 44
             fi
