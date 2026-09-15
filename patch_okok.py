@@ -102,6 +102,13 @@ UMENG_CODE_ITEMS = {
 }
 # AppMetrica preload provider (analytics, not app core).
 AD_PROVIDER_CODE_ITEMS.setdefault('classes9.dex', {})[0x3B53F8] = 64
+# Diagnostic startup isolation: these providers are not required for the first
+# local UI frame and can run before Application.onCreate().
+AD_PROVIDER_CODE_ITEMS.setdefault('classes.dex', {})[0x44FCB0] = 35   # androidx.startup.InitializationProvider.onCreate
+AD_PROVIDER_CODE_ITEMS.setdefault('classes4.dex', {})[0x3EFEE8] = 25 # FirebaseInitProvider.onCreate
+
+CSAPPLICATION_ONCREATE = (0x31F0EC, 37)
+CSAPPLICATION_SUPER_ONCREATE_METHOD_IDX = 0xA610
 
 ALLOW_BACKUP_DATA_OFF = 0xDD14
 
@@ -214,6 +221,25 @@ def patch_ad_provider_dex(name: str, data: bytes) -> bytes:
     return bytes(x)
 
 
+def patch_csapplication_dex(data: bytes) -> bytes:
+    x = bytearray(data)
+    off, insns_size = CSAPPLICATION_ONCREATE
+    actual = struct.unpack_from('<I', x, off + 12)[0]
+    if actual != insns_size:
+        raise ValueError(f'CSApplication.onCreate size mismatch: {actual} != {insns_size}')
+    # Preserve the normal Application superclass chain, then stop. This keeps
+    # BleApplication/MyApplication context setup but skips all optional startup
+    # integrations until we know the app can reach its first Activity.
+    body = [
+        0x106F, CSAPPLICATION_SUPER_ONCREATE_METHOD_IDX, 0x0001,
+        0x000E,
+    ]
+    for i, code_unit in enumerate(body):
+        struct.pack_into('<H', x, off + 16 + 2 * i, code_unit)
+    x[off + 16 + 2 * len(body):off + 16 + 2 * insns_size] = b'\0' * (2 * (insns_size - len(body)))
+    return bytes(x)
+
+
 def patch_manifest(data: bytes) -> bytes:
     if sha(data) != MANIFEST_SHA:
         raise ValueError('AndroidManifest.xml hash mismatch; this patcher supports OKOK 3.1.66 only')
@@ -261,6 +287,8 @@ def mutate_entry(name: str, data: bytes, is_base: bool):
     original = data
     if is_base and name == 'classes4.dex':
         data = patch_ad_dex(data)
+    if is_base and name == 'classes3.dex':
+        data = patch_csapplication_dex(data)
     if is_base and name in AD_PROVIDER_CODE_ITEMS:
         data = patch_ad_provider_dex(name, data)
     if is_base and name == 'AndroidManifest.xml':
