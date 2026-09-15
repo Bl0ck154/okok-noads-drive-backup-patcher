@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import hashlib
 import os
 import shutil
@@ -19,6 +20,25 @@ OLD_LABEL = 'OKOK·International'
 # can be replaced safely inside Android binary string pools without rebuilding
 # resources.arsc.
 NEW_LABEL = 'OKOK·Modded Build!'
+
+# Lite build placeholders: keep resource IDs/files valid while dropping heavy
+# decorative/media payload. The MP3 is ~0.15 s of silence; the PNG is a 1x1
+# transparent pixel.
+SILENT_MP3 = base64.b64decode(
+    'SUQzBAAAAAAAIlRTU0UAAAAOAAADTGF2ZjYxLjcuMTAzAAAAAAAAAAAAAAD/4zjAAAAAAAAAAAAASW5mbwAAAA8AAAAFAAACQACA'
+    'gICAgICAgICAgICAgICAgICAoKCgoKCgoKCgoKCgoKCgoKCgoKDAwMDAwMDAwMDAwMDAwMDAwMDAwODg4ODg4ODg4ODg4ODg4ODg'
+    '4ODg//////////////////////////8AAAAATGF2YzYxLjE5AAAAAAAAAAAAAAAAJARQAAAAAAAAAkC9954TAAAAAAAAAAAAAAAA'
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/4xjEAAAAA0gAAAAATEFNRTMuMTAwVVVVVVVVVVVVVVVVVVVVVVVV'
+    'VVVVVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVX/4xjEOwAAA0gAAAAAVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV'
+    'VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/4xjEdgAAA0gAAAAAVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV'
+    'VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/4xjEsQAAA0gAAAAAVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV'
+    'VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVX/4xjExAAAA0gAAAAAVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV'
+    'VVVVVVVVVVVVVVVVVVVVVVVVVVU='
+)
+TRANSPARENT_PNG = base64.b64decode(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+Z9erAAAAAElFTkSuQmCC'
+)
+LITE_IMAGE_THRESHOLD = 100_000
 
 # code_item offsets in classes4.dex for com.chipsea.code.ad.TopOnAdManager methods.
 AD_CODE_ITEMS = {
@@ -66,6 +86,23 @@ AD_PROVIDER_CODE_ITEMS = {
         0x325A30: 24,  # BigoAdsProvider.onCreate
     },
 }
+
+# Startup simplification in classes4.dex.
+SHELL_ONCREATE = (0x2E1AA8, 189)
+SHELL_SUPER_ONCREATE_METHOD_IDX = 1559
+APPENTRY_WELCOME_METHOD_IDX = 1555
+ACTIVITY_FINISH_METHOD_IDX = 28
+UMENG_CODE_ITEMS = {
+    0x29644C: 4,   # onPageEnd
+    0x296464: 4,   # onPageStart
+    0x29647C: 4,   # onPause
+    0x296494: 4,   # onResume
+    0x2964AC: 27,  # umconfigInit
+    0x2964F4: 8,   # umconfigPreinit
+}
+# AppMetrica preload provider (analytics, not app core).
+AD_PROVIDER_CODE_ITEMS.setdefault('classes9.dex', {})[0x3B53F8] = 64
+
 ALLOW_BACKUP_DATA_OFF = 0xDD14
 
 
@@ -117,13 +154,40 @@ def patch_ad_dex(data: bytes) -> bytes:
     if sha(data) != DEX_SHA:
         raise ValueError('classes4.dex hash mismatch; this patcher supports OKOK 3.1.66 only')
     x = bytearray(data)
+
+    # Disable the app-level ad manager.
     for off, insns_size in AD_CODE_ITEMS.items():
         actual = struct.unpack_from('<I', x, off + 12)[0]
         if actual != insns_size:
             raise ValueError(f'code_item size mismatch at {off:#x}: {actual} != {insns_size}')
-        # First instruction: return-void (0x000e), remaining instructions: nop.
+        struct.pack_into('<H', x, off + 16, 0x000E)  # return-void
+        x[off + 18:off + 16 + 2 * insns_size] = b'\0' * (2 * (insns_size - 1))
+
+    # Disable Umeng analytics hooks, including the pre-init called directly
+    # from CSApplication.onCreate().
+    for off, insns_size in UMENG_CODE_ITEMS.items():
+        actual = struct.unpack_from('<I', x, off + 12)[0]
+        if actual != insns_size:
+            raise ValueError(f'Umeng code_item size mismatch at {off:#x}: {actual} != {insns_size}')
         struct.pack_into('<H', x, off + 16, 0x000E)
         x[off + 18:off + 16 + 2 * insns_size] = b'\0' * (2 * (insns_size - 1))
+
+    # Bypass com.chipsea.shell.MainActivity (privacy/VIP/app-open-ad wrapper).
+    # Keep the normal Activity lifecycle contract: call direct superclass
+    # onCreate(Bundle), launch AppEntry.welcome() -> InitActivity, finish shell.
+    off, insns_size = SHELL_ONCREATE
+    actual = struct.unpack_from('<I', x, off + 12)[0]
+    if actual != insns_size:
+        raise ValueError(f'shell onCreate size mismatch: {actual} != {insns_size}')
+    body = [
+        0x0275, SHELL_SUPER_ONCREATE_METHOD_IDX, 0x0001,  # invoke-super/range {v1..v2}
+        0x0177, APPENTRY_WELCOME_METHOD_IDX, 0x0001,     # invoke-static/range {v1}
+        0x0174, ACTIVITY_FINISH_METHOD_IDX, 0x0001,      # invoke-virtual/range {v1}
+        0x000E,                                           # return-void
+    ]
+    for i, code_unit in enumerate(body):
+        struct.pack_into('<H', x, off + 16 + 2 * i, code_unit)
+    x[off + 16 + 2 * len(body):off + 16 + 2 * insns_size] = b'\0' * (2 * (insns_size - len(body)))
     return bytes(x)
 
 
@@ -202,6 +266,18 @@ def mutate_entry(name: str, data: bytes, is_base: bool):
     if is_base and name == 'AndroidManifest.xml':
         data = patch_manifest(data)
 
+    # Lite payload: preserve resource names/IDs but replace heavyweight media.
+    if is_base and name.startswith('res/raw/music') and name.endswith('.mp3'):
+        data = SILENT_MP3
+    if (
+        is_base
+        and name.startswith(('res/mipmap', 'res/drawable'))
+        and name.endswith('.png')
+        and not name.endswith('.9.png')
+        and len(data) >= LITE_IMAGE_THRESHOLD
+    ):
+        data = TRANSPARENT_PNG
+
     data, package_hits, label_hits = replace_fixed_strings(data)
     if name.endswith('.dex') and data != original:
         data = refresh_dex(data)
@@ -214,6 +290,8 @@ def repack(src: str, dst: str, is_base: bool = False):
     with zipfile.ZipFile(src, 'r') as zin, zipfile.ZipFile(dst, 'w', allowZip64=True) as zout:
         for zi in zin.infolist():
             if is_old_sig(zi.filename):
+                continue
+            if is_base and zi.filename == 'assets/audience_network/classes2.dex':
                 continue
             data = zin.read(zi.filename)
             data, p_hits, l_hits = mutate_entry(zi.filename, data, is_base)
