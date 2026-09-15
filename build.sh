@@ -12,12 +12,16 @@ OUT="$ROOT/out"
 PATCHED="$OUT/patched-splits"
 MERGED="$OUT/OKOK-Mod-3.1.66-universal-unsigned.apk"
 ALIGNED="$OUT/OKOK-Mod-3.1.66-universal-aligned.apk"
-FINAL="$OUT/OKOK-Mod-3.1.66-universal.apk"
+FINAL="$OUT/OKOK-BlankCore-3.1.66-full.apk"
+CORE_DIR="$OUT/patched-base-arm64"
+MERGED_CORE="$OUT/OKOK-BlankCore-3.1.66-base-arm64-unsigned.apk"
+ALIGNED_CORE="$OUT/OKOK-BlankCore-3.1.66-base-arm64-aligned.apk"
+FINAL_CORE="$OUT/OKOK-BlankCore-3.1.66-base-arm64.apk"
 CACHE="$ROOT/.cache"
 PRIVATE="$ROOT/.private"
-mkdir -p "$PATCHED" "$CACHE" "$PRIVATE"
-rm -rf "$PATCHED"/*
-rm -f "$MERGED" "$ALIGNED" "$FINAL" "$OUT/SHA256SUMS.txt"
+mkdir -p "$PATCHED" "$CORE_DIR" "$CACHE" "$PRIVATE"
+rm -rf "$PATCHED"/* "$CORE_DIR"/*
+rm -f "$MERGED" "$ALIGNED" "$FINAL" "$MERGED_CORE" "$ALIGNED_CORE" "$FINAL_CORE" "$OUT/SHA256SUMS.txt"
 
 python3 "$ROOT/patch_okok.py" "$INPUT" "$PATCHED"
 
@@ -57,34 +61,42 @@ fi
 
 java -Xmx4g -jar "$APKEDITOR" m -i "$PATCHED" -o "$MERGED" -f -clean-meta
 
-python3 - "$MERGED" <<'PY'
+# A/B diagnostic: merge only base + arm64 native split, intentionally omitting
+# the density split/resources. This isolates resource-table merge failures.
+cp "$PATCHED/base.apk" "$CORE_DIR/base.apk"
+cp "$PATCHED/split_config.arm64_v8a.apk" "$CORE_DIR/split_config.arm64_v8a.apk"
+java -Xmx4g -jar "$APKEDITOR" m -i "$CORE_DIR" -o "$MERGED_CORE" -f -clean-meta
+
+python3 - "$MERGED" "$MERGED_CORE" <<'PY'
 import sys, zipfile
-apk=sys.argv[1]
 old=b'com.chipsea.btcontrol.en'
 new=b'com.chipsea.btcontrol.na'
 old16='com.chipsea.btcontrol.en'.encode('utf-16le')
 new16='com.chipsea.btcontrol.na'.encode('utf-16le')
-old_hits=[]; new_hits=0
-with zipfile.ZipFile(apk) as z:
-    bad=z.testzip()
-    if bad:
-        raise SystemExit(f'bad ZIP member: {bad}')
-    for info in z.infolist():
-        if info.is_dir():
-            continue
-        data=z.read(info.filename)
-        if old in data or old16 in data:
-            old_hits.append(info.filename)
-        new_hits += data.count(new) + data.count(new16)
-if old_hits:
-    raise SystemExit(f'old package remains: {old_hits[:20]}')
-if new_hits == 0:
-    raise SystemExit('new package not found in merged APK')
-print(f'package verification OK; new-package hits={new_hits}')
+for apk in sys.argv[1:]:
+    old_hits=[]; new_hits=0
+    with zipfile.ZipFile(apk) as z:
+        bad=z.testzip()
+        if bad:
+            raise SystemExit(f'{apk}: bad ZIP member: {bad}')
+        for info in z.infolist():
+            if info.is_dir():
+                continue
+            data=z.read(info.filename)
+            if old in data or old16 in data:
+                old_hits.append(info.filename)
+            new_hits += data.count(new) + data.count(new16)
+    if old_hits:
+        raise SystemExit(f'{apk}: old package remains: {old_hits[:20]}')
+    if new_hits == 0:
+        raise SystemExit(f'{apk}: new package not found')
+    print(f'{apk}: package verification OK; new-package hits={new_hits}')
 PY
 
 "$ZIPALIGN" -P 16 -f 4 "$MERGED" "$ALIGNED"
+"$ZIPALIGN" -P 16 -f 4 "$MERGED_CORE" "$ALIGNED_CORE"
 "$ZIPALIGN" -P 16 -c 4 "$ALIGNED"
+"$ZIPALIGN" -P 16 -c 4 "$ALIGNED_CORE"
 
 KEYSTORE="${OKOK_KEYSTORE:-$PRIVATE/okok-mod.p12}"
 PASS="${OKOK_KEYSTORE_PASS:-okokmod-local}"
@@ -108,10 +120,18 @@ fi
   --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
   --out "$FINAL" "$ALIGNED"
 
+"$APKSIGNER" sign \
+  --ks "$KEYSTORE" --ks-key-alias "$ALIAS" \
+  --ks-pass "pass:$PASS" --key-pass "pass:$PASS" \
+  --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+  --out "$FINAL_CORE" "$ALIGNED_CORE"
+
 "$APKSIGNER" verify --verbose --print-certs "$FINAL"
-sha256sum "$FINAL" | tee "$OUT/SHA256SUMS.txt"
+"$APKSIGNER" verify --verbose --print-certs "$FINAL_CORE"
+sha256sum "$FINAL" "$FINAL_CORE" | tee "$OUT/SHA256SUMS.txt"
 
 echo
 echo "Built: $FINAL"
+echo "Built: $FINAL_CORE"
 echo "Package: com.chipsea.btcontrol.na"
 echo "Installable alongside the original com.chipsea.btcontrol.en app."

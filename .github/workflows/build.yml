@@ -82,9 +82,10 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OKOK-Mod-3.1.66-universal
+          name: OKOK-BlankCore-3.1.66
           path: |
-            out/OKOK-Mod-3.1.66-universal.apk
+            out/OKOK-BlankCore-3.1.66-full.apk
+            out/OKOK-BlankCore-3.1.66-base-arm64.apk
             out/SHA256SUMS.txt
           if-no-files-found: error
           compression-level: 0
@@ -98,7 +99,8 @@ jobs:
           set -euo pipefail
           gh release delete "$TAG" --cleanup-tag --yes 2>/dev/null || true
           gh release create "$TAG" \
-            out/OKOK-Mod-3.1.66-universal.apk \
+            out/OKOK-BlankCore-3.1.66-full.apk \
+            out/OKOK-BlankCore-3.1.66-base-arm64.apk \
             out/SHA256SUMS.txt \
-            --title "OKOK Mod 3.1.66" \
-            --notes "Side-by-side build. Package: com.chipsea.btcontrol.na. Ads disabled. Android Auto Backup enabled. This does not add an in-app Google Drive synchronization screen."
+            --title "OKOK Blank Core diagnostics 3.1.66" \
+            --notes "Diagnostic side-by-side builds for startup isolation. Package: com.chipsea.btcontrol.na. BlankCore-full includes the density merge; BlankCore-base-arm64 intentionally omits the density split to isolate resource-table merge failures."

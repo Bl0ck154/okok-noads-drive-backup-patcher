@@ -87,11 +87,15 @@ AD_PROVIDER_CODE_ITEMS = {
     },
 }
 
-# Startup simplification in classes4.dex.
-SHELL_ONCREATE = (0x2E1AA8, 189)
-SHELL_SUPER_ONCREATE_METHOD_IDX = 1559
-APPENTRY_WELCOME_METHOD_IDX = 1555
-ACTIVITY_FINISH_METHOD_IDX = 28
+# Diagnostic Blank Core: every startup layer keeps only its legal super() call.
+BLEAPP_ONCREATE = (0x2207C0, 13, [0x106F, 0x0034, 0x0001, 0x000E])
+MYAPP_ONCREATE = (0x2367CC, 27, [0x106F, 0x25CC, 0x0002, 0x000E])
+SIMPLE_ATTACH = (0x2424FC, 18, [0x206F, 0x0529, 0x0032, 0x000E])
+SIMPLE_ONCREATE = (0x242584, 39, [0x206F, 0x0534, 0x0043, 0x000E])
+SIMPLE_ONRESUME = (0x242640, 18, [0x106F, 0x0536, 0x0001, 0x000E])
+COMMONWHITE_ONCREATE = (0x2FFE80, 18, [0x206F, 0x2C38, 0x0010, 0x000E])
+SHELL_ONCREATE = (0x2E1AA8, 189, [0x206F, 0x0617, 0x0021, 0x000E])
+SHELL_ONRESUME = (0x2E1D00, 70, [0x106F, 0x0619, 0x0003, 0x000E])
 UMENG_CODE_ITEMS = {
     0x29644C: 4,   # onPageEnd
     0x296464: 4,   # onPageStart
@@ -179,22 +183,25 @@ def patch_ad_dex(data: bytes) -> bytes:
         struct.pack_into('<H', x, off + 16, 0x000E)
         x[off + 18:off + 16 + 2 * insns_size] = b'\0' * (2 * (insns_size - 1))
 
-    # Bypass com.chipsea.shell.MainActivity (privacy/VIP/app-open-ad wrapper).
-    # Keep the normal Activity lifecycle contract: call direct superclass
-    # onCreate(Bundle), launch AppEntry.welcome() -> InitActivity, finish shell.
-    off, insns_size = SHELL_ONCREATE
-    actual = struct.unpack_from('<I', x, off + 12)[0]
-    if actual != insns_size:
-        raise ValueError(f'shell onCreate size mismatch: {actual} != {insns_size}')
-    body = [
-        0x0275, SHELL_SUPER_ONCREATE_METHOD_IDX, 0x0001,  # invoke-super/range {v1..v2}
-        0x0177, APPENTRY_WELCOME_METHOD_IDX, 0x0001,     # invoke-static/range {v1}
-        0x0174, ACTIVITY_FINISH_METHOD_IDX, 0x0001,      # invoke-virtual/range {v1}
-        0x000E,                                           # return-void
-    ]
-    for i, code_unit in enumerate(body):
-        struct.pack_into('<H', x, off + 16 + 2 * i, code_unit)
-    x[off + 16 + 2 * len(body):off + 16 + 2 * insns_size] = b'\0' * (2 * (insns_size - len(body)))
+    # Blank Core diagnostic: strip every app/activity startup layer down to
+    # its original legal super() invocation plus return-void.
+    for label, spec in (
+        ('BleApplication.onCreate', BLEAPP_ONCREATE),
+        ('MyApplication.onCreate', MYAPP_ONCREATE),
+        ('SimpleActivity.attachBaseContext', SIMPLE_ATTACH),
+        ('SimpleActivity.onCreate', SIMPLE_ONCREATE),
+        ('SimpleActivity.onResume', SIMPLE_ONRESUME),
+        ('CommonWhiteActivity.onCreate', COMMONWHITE_ONCREATE),
+        ('shell.MainActivity.onCreate', SHELL_ONCREATE),
+        ('shell.MainActivity.onResume', SHELL_ONRESUME),
+    ):
+        off, insns_size, body = spec
+        actual = struct.unpack_from('<I', x, off + 12)[0]
+        if actual != insns_size:
+            raise ValueError(f'{label} size mismatch at {off:#x}: {actual} != {insns_size}')
+        for i, code_unit in enumerate(body):
+            struct.pack_into('<H', x, off + 16 + 2 * i, code_unit)
+        x[off + 16 + 2 * len(body):off + 16 + 2 * insns_size] = b'\0' * (2 * (insns_size - len(body)))
     return bytes(x)
 
 
