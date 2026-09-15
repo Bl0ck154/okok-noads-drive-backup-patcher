@@ -37,6 +37,35 @@ AD_CODE_ITEMS = {
     0x23B868: 31,  # showSplashAd
     0x23B8B8: 56,  # toLoadAd
 }
+
+# Advertising SDK ContentProviders run before Application.onCreate(). The
+# original no-ads patch disabled the app-level TopOn manager, but these
+# providers could still initialize third-party ad SDKs during process startup.
+# For this exact hash-guarded OKOK 3.1.66 build, their onCreate() methods are
+# replaced with `return true` while keeping each code item the same size.
+AD_PROVIDER_CODE_ITEMS = {
+    'classes5.dex': {
+        0x2185D8: 13,  # Facebook AudienceNetworkContentProvider.onCreate
+        0x365468: 2,   # Google MobileAdsInitProvider.onCreate
+        0x57CB5C: 28,  # MBridge MBComponentLifecycleProvider.onCreate
+    },
+    'classes6.dex': {
+        0x56E6F8: 40,  # SmartDigi SDMInitializationProvider.onCreate
+    },
+    'classes7.dex': {
+        0x3336FC: 28,  # SecMtp ATInitializationProvider.onCreate
+    },
+    'classes8.dex': {
+        0x222534: 15,  # TraminiContentProvider.onCreate
+        0x284FBC: 13,  # VungleProvider.onCreate
+    },
+    'classes9.dex': {
+        0x185AEC: 18,  # Yandex MobileAdsInitializeProvider.onCreate
+    },
+    'classes10.dex': {
+        0x325A30: 24,  # BigoAdsProvider.onCreate
+    },
+}
 ALLOW_BACKUP_DATA_OFF = 0xDD14
 
 
@@ -98,6 +127,29 @@ def patch_ad_dex(data: bytes) -> bytes:
     return bytes(x)
 
 
+def patch_ad_provider_dex(name: str, data: bytes) -> bytes:
+    items = AD_PROVIDER_CODE_ITEMS.get(name)
+    if not items:
+        return data
+    x = bytearray(data)
+    for off, insns_size in items.items():
+        actual = struct.unpack_from('<I', x, off + 12)[0]
+        if actual != insns_size:
+            raise ValueError(
+                f'ad provider code_item size mismatch in {name} at {off:#x}: '
+                f'{actual} != {insns_size}'
+            )
+        registers_size = struct.unpack_from('<H', x, off)[0]
+        if registers_size < 1:
+            raise ValueError(f'ad provider {name} at {off:#x} has no v0 register')
+        # const/4 v0, #1 ; return v0 ; nop ...
+        struct.pack_into('<H', x, off + 16, 0x1012)
+        struct.pack_into('<H', x, off + 18, 0x000F)
+        if insns_size > 2:
+            x[off + 20:off + 16 + 2 * insns_size] = b'\0' * (2 * (insns_size - 2))
+    return bytes(x)
+
+
 def patch_manifest(data: bytes) -> bytes:
     if sha(data) != MANIFEST_SHA:
         raise ValueError('AndroidManifest.xml hash mismatch; this patcher supports OKOK 3.1.66 only')
@@ -145,6 +197,8 @@ def mutate_entry(name: str, data: bytes, is_base: bool):
     original = data
     if is_base and name == 'classes4.dex':
         data = patch_ad_dex(data)
+    if is_base and name in AD_PROVIDER_CODE_ITEMS:
+        data = patch_ad_provider_dex(name, data)
     if is_base and name == 'AndroidManifest.xml':
         data = patch_manifest(data)
 
