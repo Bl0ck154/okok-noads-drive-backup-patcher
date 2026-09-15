@@ -74,23 +74,17 @@ new=b'com.chipsea.btcontrol.na'
 old16='com.chipsea.btcontrol.en'.encode('utf-16le')
 new16='com.chipsea.btcontrol.na'.encode('utf-16le')
 for apk in sys.argv[1:]:
-    old_hits=[]; new_hits=0
     with zipfile.ZipFile(apk) as z:
         bad=z.testzip()
         if bad:
             raise SystemExit(f'{apk}: bad ZIP member: {bad}')
-        for info in z.infolist():
-            if info.is_dir():
-                continue
-            data=z.read(info.filename)
-            if old in data or old16 in data:
-                old_hits.append(info.filename)
-            new_hits += data.count(new) + data.count(new16)
-    if old_hits:
-        raise SystemExit(f'{apk}: old package remains: {old_hits[:20]}')
+        manifest=z.read('AndroidManifest.xml')
+    if old in manifest or old16 in manifest:
+        raise SystemExit(f'{apk}: old package remains in AndroidManifest.xml')
+    new_hits=manifest.count(new)+manifest.count(new16)
     if new_hits == 0:
-        raise SystemExit(f'{apk}: new package not found')
-    print(f'{apk}: package verification OK; new-package hits={new_hits}')
+        raise SystemExit(f'{apk}: new package missing from AndroidManifest.xml')
+    print(f'{apk}: manifest-only package clone OK; manifest new-package hits={new_hits}')
 PY
 
 "$ZIPALIGN" -P 16 -f 4 "$MERGED" "$ALIGNED"

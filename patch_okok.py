@@ -313,7 +313,12 @@ def mutate_entry(name: str, data: bytes, is_base: bool):
     ):
         data = TRANSPARENT_PNG
 
-    data, package_hits, label_hits = replace_fixed_strings(data)
+    # Side-by-side clone: rename only the binary manifest. Keep all DEX and
+    # resources.arsc package constants exactly as the vendor shipped them;
+    # several internal/auth libraries treat the original package as data.
+    package_hits = label_hits = 0
+    if name == 'AndroidManifest.xml':
+        data, package_hits, label_hits = replace_fixed_strings(data)
     if name.endswith('.dex') and data != original:
         data = refresh_dex(data)
     return data, package_hits, label_hits
@@ -346,17 +351,13 @@ def repack(src: str, dst: str, is_base: bool = False):
     return package_hits, label_hits
 
 
-def verify_no_old_package(apk_path: str):
-    leftovers = []
+def verify_manifest_clone(apk_path: str):
     with zipfile.ZipFile(apk_path, 'r') as z:
-        for zi in z.infolist():
-            if zi.is_dir():
-                continue
-            data = z.read(zi.filename)
-            if OLD_PACKAGE_BYTES in data or OLD_PACKAGE_UTF16 in data:
-                leftovers.append(zi.filename)
-    if leftovers:
-        raise ValueError(f'old package name remains in {apk_path}: {leftovers[:20]}')
+        data = z.read('AndroidManifest.xml')
+    if NEW_PACKAGE.encode('utf-8') not in data and NEW_PACKAGE.encode('utf-16le') not in data:
+        raise ValueError(f'new package missing from manifest: {apk_path}')
+    if OLD_PACKAGE_BYTES in data or OLD_PACKAGE_UTF16 in data:
+        raise ValueError(f'old package remains in manifest: {apk_path}')
 
 
 def _pick_bundle_entry(names, candidates, label):
@@ -429,7 +430,7 @@ def build(input_zip: str, outdir: str):
                 p_hits, l_hits = repack(src, dst, is_base=is_base)
                 total_package_hits += p_hits
                 total_label_hits += l_hits
-                verify_no_old_package(dst)
+                verify_manifest_clone(dst)
                 outputs.append(dst)
 
             if total_package_hits == 0:
